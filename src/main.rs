@@ -20,7 +20,7 @@ struct Cli {
     /// Which archive files to download, in the format "YYYY-MM-DD-HH"
     files: Vec<String>,
     /// API key for Papertrail.
-    #[arg(id = "api_token", env = "PAPERTRAIL_API_TOKEN", long, value_parser = api_client_from_token)]
+    #[arg(id = "api-token", env = "PAPERTRAIL_API_TOKEN", long, value_parser = api_client_from_token)]
     api_client: Client,
     /// How many files to download at once.
     #[arg(short, long, default_value = &**DEFAULT_CONCURRENCY)]
