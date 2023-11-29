@@ -1,7 +1,9 @@
 use anyhow::{Context, Result};
 use async_compression::tokio::write::GzipDecoder;
-use chrono::{DateTime, Utc};
+// TODO: Fix parsing these in Event
+// use chrono::{DateTime, NaiveDateTime, Utc};
 use clap::Parser;
+use csv_async::{AsyncReaderBuilder, AsyncWriterBuilder};
 use dotenv::dotenv;
 use lazy_static::lazy_static;
 use reqwest::StatusCode;
@@ -10,6 +12,8 @@ use std::net::Ipv4Addr;
 use std::path::PathBuf;
 use std::time::Duration;
 use thiserror::Error;
+use tokio::fs::{File, OpenOptions};
+use tokio::io::AsyncSeekExt;
 use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio_stream::StreamExt;
 lazy_static! {
@@ -17,11 +21,11 @@ lazy_static! {
         std::thread::available_parallelism().map_or_else(|_| String::from("4"), |n| n.to_string());
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct Event {
     pub id: u128,
-    pub generated_at: DateTime<Utc>,
-    pub received_at: DateTime<Utc>,
+    pub generated_at: String,
+    pub received_at: String,
     pub source_id: u32,
     pub source_name: String,
     pub source_ip: Ipv4Addr,
@@ -51,13 +55,29 @@ struct Cli {
     /// Decode from gzip before writing.
     #[arg(short, long)]
     deflate: bool,
-    // TODO: Serialize parsed decompressed TSV stream to CSV
-    // /// Convert to CSV while writing.
-    // #[arg(long, requires = "deflate")]
-    // csv: bool,
+    /// Convert the downloaded files to CSV.
+    #[arg(long, requires = "deflate")]
+    csv: bool,
 }
 
 impl Cli {
+    async fn convert_to_csv(&self, from: File, to: PathBuf) -> Result<()> {
+        let reader = AsyncReaderBuilder::new()
+            .has_headers(false)
+            .delimiter(b'\t')
+            .create_deserializer(from);
+        let file = tokio::fs::File::create(to).await?;
+        let mut writer = AsyncWriterBuilder::new().create_serializer(file);
+        let mut records = reader.into_deserialize::<Event>();
+
+        while let Some(record) = records.next().await {
+            writer.serialize(record?).await?;
+        }
+
+        writer.flush().await?;
+        Ok(())
+    }
+
     async fn download_file(&self, time: String) -> Result<String> {
         let response = self
             .api_client
@@ -72,8 +92,13 @@ impl Cli {
             StatusCode::OK => {
                 let mut byte_stream = response.bytes_stream();
                 let ext: &str = if self.deflate { "tsv" } else { "tsv.gz" };
-                let mut file =
-                    tokio::fs::File::create(self.out.join(format!("{}.{}", &time, ext))).await?;
+                // TODO: Use an intermediary temp file here
+                let mut file = OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create(true)
+                    .open(self.out.join(format!("{}.{}", &time, ext)))
+                    .await?;
                 let mut out = BufWriter::new(&mut file);
                 if self.deflate {
                     let mut decoder = GzipDecoder::new(out);
@@ -89,6 +114,13 @@ impl Cli {
                 }
 
                 out.shutdown().await?;
+
+                if self.csv {
+                    file.rewind().await?;
+                    self.convert_to_csv(file, self.out.join(format!("{}.csv", &time)))
+                        .await?
+                }
+
                 Ok(time.to_string())
             }
             code => Err(CliError::BadResponse(time.to_string(), code).into()),
