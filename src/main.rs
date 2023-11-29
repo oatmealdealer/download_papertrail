@@ -47,7 +47,7 @@ struct Cli {
     out: PathBuf,
     /// How long in milliseconds to wait in between requests.
     #[arg(short, long, default_value = "200")]
-    throttle_duration: usize,
+    throttle_duration: u64,
     /// Decode from gzip before writing.
     #[arg(short, long)]
     deflate: bool,
@@ -112,7 +112,7 @@ impl Cli {
                     .map(|time| self.download_file(time.clone())),
             )
             // TODO: smarter throttling
-            .throttle(Duration::from_millis(200)),
+            .throttle(Duration::from_millis(self.throttle_duration)),
             self.concurrency,
         )
         .map(|result| match result {
