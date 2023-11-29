@@ -1,9 +1,12 @@
 use anyhow::{Context, Result};
+use async_compression::tokio::write::GzipDecoder;
+use chrono::{DateTime, Utc};
 use clap::Parser;
 use dotenv::dotenv;
 use lazy_static::lazy_static;
 use reqwest::StatusCode;
 use reqwest::{header::HeaderMap, Client};
+use std::net::Ipv4Addr;
 use std::path::PathBuf;
 use std::time::Duration;
 use thiserror::Error;
@@ -14,13 +17,27 @@ lazy_static! {
         std::thread::available_parallelism().map_or_else(|_| String::from("4"), |n| n.to_string());
 }
 
+#[derive(Debug, serde::Deserialize)]
+struct Event {
+    pub id: u128,
+    pub generated_at: DateTime<Utc>,
+    pub received_at: DateTime<Utc>,
+    pub source_id: u32,
+    pub source_name: String,
+    pub source_ip: Ipv4Addr,
+    pub facility_name: String,
+    pub severity_name: String,
+    pub program: String,
+    pub message: String,
+}
+
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
     /// Which archive files to download, in the format "YYYY-MM-DD-HH"
     files: Vec<String>,
     /// API key for Papertrail.
-    #[arg(id = "api-token", env = "PAPERTRAIL_API_TOKEN", long, value_parser = api_client_from_token)]
+    #[arg(id = "api-token", value_name = "API_TOKEN", env = "PAPERTRAIL_API_TOKEN", long, value_parser = api_client_from_token)]
     api_client: Client,
     /// How many files to download at once.
     #[arg(short, long, default_value = &**DEFAULT_CONCURRENCY)]
@@ -31,6 +48,13 @@ struct Cli {
     /// How long in milliseconds to wait in between requests.
     #[arg(short, long, default_value = "200")]
     throttle_duration: usize,
+    /// Decode from gzip before writing.
+    #[arg(short, long)]
+    deflate: bool,
+    // TODO: Serialize parsed decompressed TSV stream to CSV
+    // /// Convert to CSV while writing.
+    // #[arg(long, requires = "deflate")]
+    // csv: bool,
 }
 
 impl Cli {
@@ -47,14 +71,24 @@ impl Cli {
         match response.status() {
             StatusCode::OK => {
                 let mut byte_stream = response.bytes_stream();
-
+                let ext: &str = if self.deflate { "tsv" } else { "tsv.gz" };
                 let mut file =
-                    tokio::fs::File::create(self.out.join(format!("{}.tsv.gz", &time))).await?;
+                    tokio::fs::File::create(self.out.join(format!("{}.{}", &time, ext))).await?;
                 let mut out = BufWriter::new(&mut file);
-                while let Some(item) = byte_stream.next().await {
-                    tokio::io::copy(&mut item?.as_ref(), &mut out).await?;
+                if self.deflate {
+                    let mut decoder = GzipDecoder::new(out);
+                    while let Some(item) = byte_stream.next().await {
+                        tokio::io::copy(&mut item?.as_ref(), &mut decoder).await?;
+                    }
+                    decoder.shutdown().await?;
+                    out = decoder.into_inner();
+                } else {
+                    while let Some(item) = byte_stream.next().await {
+                        tokio::io::copy(&mut item?.as_ref(), &mut out).await?;
+                    }
                 }
-                out.flush().await?;
+
+                out.shutdown().await?;
                 Ok(time.to_string())
             }
             code => Err(CliError::BadResponse(time.to_string(), code).into()),
