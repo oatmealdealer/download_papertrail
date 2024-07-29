@@ -17,7 +17,7 @@ csv-async = { version = "1.2.6", features = ["tokio", "tokio-stream"] }
 dotenv = "0.15.0"
 futures = "0.3.29"
 lazy_static = "1.4.0"
-reqwest = { version = "0.11.22", features = ["stream"] }
+reqwest = { version = "0.12.5", features = ["stream"] }
 serde = { version = "1.0.193", features = ["derive", "alloc"] }
 tempfile = "3.8.1"
 thiserror = "1.0.50"
