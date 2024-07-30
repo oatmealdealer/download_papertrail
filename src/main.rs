@@ -37,8 +37,7 @@ struct Event {
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
-    /// Which archive files to download, in the format "YYYY-MM-DD-HH"
-    /// Will be ignored if --start and --end are supplied.
+    /// Which archive files to download, in the format "YYYY-MM-DD-HH". Will be ignored if --start and --end are supplied.
     files: Vec<String>,
     /// API key for Papertrail.
     #[arg(id = "api-token", value_name = "API_TOKEN", env = "PAPERTRAIL_API_TOKEN", long, value_parser = api_client_from_token)]
@@ -73,7 +72,9 @@ impl Cli {
             self.start?
                 .and_local_timezone(Local)
                 .earliest()
-                .unwrap_or_else(move || panic!("--start {} falls within a DST gap", &self.start.unwrap()))
+                .unwrap_or_else(move || {
+                    panic!("--start {} falls within a DST gap", &self.start.unwrap())
+                })
                 .to_utc()
                 .duration_trunc(TimeDelta::hours(1))
                 // TODO: Handle this possibility more gracefully as part of general argument validation
@@ -82,7 +83,9 @@ impl Cli {
             self.end?
                 .and_local_timezone(Local)
                 .earliest()
-                .unwrap_or_else(move || panic!("--end {} falls within a DST gap", &self.start.unwrap()))
+                .unwrap_or_else(move || {
+                    panic!("--end {} falls within a DST gap", &self.start.unwrap())
+                })
                 .to_utc(),
         );
 
@@ -145,8 +148,7 @@ impl Cli {
 
                 if self.csv {
                     file.rewind().await?;
-                    convert_to_csv(file, self.out.join(format!("{}.csv", &time)))
-                        .await?
+                    convert_to_csv(file, self.out.join(format!("{}.csv", &time))).await?
                 }
 
                 Ok(time.to_string())
