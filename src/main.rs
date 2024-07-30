@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use async_compression::tokio::write::GzipDecoder;
-use chrono::{Datelike, DurationRound, NaiveDateTime, TimeDelta, Timelike};
+use chrono::{Datelike, DurationRound, Local, NaiveDateTime, TimeDelta, Timelike};
 use clap::Parser;
 use csv_async::{AsyncReaderBuilder, AsyncWriterBuilder};
 use dotenv::dotenv;
@@ -71,11 +71,19 @@ impl Cli {
     fn file_names(&self) -> Option<Vec<String>> {
         let (mut start, end) = (
             self.start?
+                .and_local_timezone(Local)
+                .earliest()
+                .unwrap_or_else(move || panic!("--start {} falls within a DST gap", &self.start.unwrap()))
+                .to_utc()
                 .duration_trunc(TimeDelta::hours(1))
                 // TODO: Handle this possibility more gracefully as part of general argument validation
                 .with_context(move || format!("Invalid start datetime: {}", &self.start.unwrap()))
                 .unwrap(),
-            self.end?,
+            self.end?
+                .and_local_timezone(Local)
+                .earliest()
+                .unwrap_or_else(move || panic!("--end {} falls within a DST gap", &self.start.unwrap()))
+                .to_utc(),
         );
 
         let mut names: Vec<String> = vec![];
