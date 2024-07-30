@@ -1,7 +1,6 @@
 use anyhow::{Context, Result};
 use async_compression::tokio::write::GzipDecoder;
-// TODO: Fix parsing these in Event
-// use chrono::{DateTime, NaiveDateTime, Utc};
+use chrono::{Datelike, DurationRound, NaiveDateTime, TimeDelta, Timelike};
 use clap::Parser;
 use csv_async::{AsyncReaderBuilder, AsyncWriterBuilder};
 use dotenv::dotenv;
@@ -39,6 +38,7 @@ struct Event {
 #[command(author, version, about, long_about = None)]
 struct Cli {
     /// Which archive files to download, in the format "YYYY-MM-DD-HH"
+    /// Will be ignored if --start and --end are supplied.
     files: Vec<String>,
     /// API key for Papertrail.
     #[arg(id = "api-token", value_name = "API_TOKEN", env = "PAPERTRAIL_API_TOKEN", long, value_parser = api_client_from_token)]
@@ -58,24 +58,44 @@ struct Cli {
     /// Convert the downloaded files to CSV.
     #[arg(long, requires = "deflate")]
     csv: bool,
+    /// Start of datetime window
+    #[arg(long, requires = "start")]
+    start: Option<NaiveDateTime>,
+    /// End of datetime window
+    #[arg(long, requires = "end")]
+    end: Option<NaiveDateTime>,
 }
 
 impl Cli {
-    async fn convert_to_csv(&self, from: File, to: PathBuf) -> Result<()> {
-        let reader = AsyncReaderBuilder::new()
-            .has_headers(false)
-            .delimiter(b'\t')
-            .create_deserializer(from);
-        let file = tokio::fs::File::create(to).await?;
-        let mut writer = AsyncWriterBuilder::new().create_serializer(file);
-        let mut records = reader.into_deserialize::<Event>();
+    /// If the start and end args are supplied, generate a list of files to download.
+    fn file_names(&self) -> Option<Vec<String>> {
+        let (mut start, end) = (
+            self.start?
+                .duration_trunc(TimeDelta::hours(1))
+                // TODO: Handle this possibility more gracefully as part of general argument validation
+                .with_context(move || format!("Invalid start datetime: {}", &self.start.unwrap()))
+                .unwrap(),
+            self.end?,
+        );
 
-        while let Some(record) = records.next().await {
-            writer.serialize(record?).await?;
+        let mut names: Vec<String> = vec![];
+        while start <= end {
+            names.push(format!(
+                "{}-{:02}-{:02}-{:02}",
+                start.year(),
+                start.month(),
+                start.day(),
+                start.hour()
+            ));
+
+            if let Some(new_start) = start.checked_add_signed(TimeDelta::hours(1)) {
+                start = new_start;
+            } else {
+                break;
+            }
         }
 
-        writer.flush().await?;
-        Ok(())
+        Some(names)
     }
 
     async fn download_file(&self, time: String) -> Result<String> {
@@ -117,7 +137,7 @@ impl Cli {
 
                 if self.csv {
                     file.rewind().await?;
-                    self.convert_to_csv(file, self.out.join(format!("{}.csv", &time)))
+                    convert_to_csv(file, self.out.join(format!("{}.csv", &time)))
                         .await?
                 }
 
@@ -139,7 +159,9 @@ impl Cli {
         }
         futures::StreamExt::buffer_unordered(
             tokio_stream::iter(
-                self.files
+                self.file_names()
+                    .as_ref()
+                    .unwrap_or(&self.files)
                     .iter()
                     .map(|time| self.download_file(time.clone())),
             )
@@ -163,6 +185,23 @@ enum CliError {
     MissingDirectory(String),
     #[error("Failed to download {0}: {1}")]
     BadResponse(String, StatusCode),
+}
+
+async fn convert_to_csv(from: File, to: PathBuf) -> Result<()> {
+    let reader = AsyncReaderBuilder::new()
+        .has_headers(false)
+        .delimiter(b'\t')
+        .create_deserializer(from);
+    let file = tokio::fs::File::create(to).await?;
+    let mut writer = AsyncWriterBuilder::new().create_serializer(file);
+    let mut records = reader.into_deserialize::<Event>();
+
+    while let Some(record) = records.next().await {
+        writer.serialize(record?).await?;
+    }
+
+    writer.flush().await?;
+    Ok(())
 }
 
 fn api_client_from_token(token: &str) -> Result<Client> {
